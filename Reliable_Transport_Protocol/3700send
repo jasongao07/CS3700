@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+
+import argparse, socket, time, json, select, struct, sys, math, hashlib
+
+DATA_SIZE = 1375 
+
+class Sender:
+    def __init__(self, host, port):
+        self.host = host
+        self.remote_port = int(port)
+        self.log("Sender starting up using port %s" % self.remote_port)
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(('0.0.0.0', 0))
+        self.waiting = False
+
+        self.window_size = 4
+        self.packet_count = 0
+        self.sequence_num = 0
+        self.packets = [] 
+        self.pending_acks = []
+        self.RTT = 1
+        self.timeout = self.RTT * 2
+        self.cwnd = 1
+        self.ssthresh = self.window_size
+
+    def log(self, message):
+        sys.stderr.write(message + "\n")
+        sys.stderr.flush()
+
+    def send(self, message):
+        self.socket.sendto(json.dumps(message).encode('utf-8'), (self.host, self.remote_port))
+    
+    def run(self):
+        
+        while True:
+            sockets = [self.socket, sys.stdin] if not self.waiting else [self.socket]
+
+            socks = select.select(sockets, [], [], 0.1)[0]
+            for conn in socks:
+                if conn == self.socket:
+                        
+                        k, addr = conn.recvfrom(65535)
+                        self.packet_count -= 1
+                        msg = k.decode('utf-8')
+
+                        try:
+                            # receives the message as a json
+                            ackMessage = json.loads(msg)
+                        
+                            # iterate through all the pending_acks and check for the correct data
+                            for message in self.pending_acks:
+                                if message["seq"] == ackMessage["seq"]:
+                                    data = message["data"]
+
+                            # checksum to check if the package is corrupt
+                            if ackMessage["corrupt"] == hashlib.md5(data.encode('utf-8')).hexdigest(): 
+                                # goes through the pending_acks and removes when it matches the ack's sequence number
+                                for ack in self.pending_acks:
+                                    if ack["seq"] == ackMessage["seq"]:
+                                        self.pending_acks.remove(ack)
+                                        break    
+                                if self.cwnd < self.ssthresh:
+                                    self.cwnd += 1
+                                else:
+                                    self.cwnd + self.cwnd + (1 / self.cwnd)
+                                self.log("Received ACK '%s'" % msg)
+                                self.waiting = False
+                                
+                                # adjust rtt for a variety of latencies
+                                self.RTT = (.875 * self.RTT) + .125 * (time.time() - ackMessage["time"])
+                                self.timeout = self.RTT * 2
+                        except:
+                            continue
+                        
+
+                elif conn == sys.stdin:
+                    data = sys.stdin.read(DATA_SIZE)
+                    
+                    if len(data) == 0 and len(self.pending_acks) == 0:
+                        self.log("All done!")
+                        sys.exit(0)
+                    elif len(data) != 0:
+                        
+                        # encoded the data to be sent to the receiver
+                        packet_data = hashlib.md5(data.encode('utf-8')).hexdigest()
+
+                        msg = { "type": "msg", "seq": self.sequence_num, "data": data, "time": time.time(), "corrupt": packet_data}
+
+                        # if the msg isn't in the packets, then add to the pending acks and send the message
+                        if msg["seq"] not in self.packets:
+
+                            self.log("Sending message '%s'" % msg)
+                            self.send(msg)
+                            
+                            self.pending_acks.append(msg)
+                            self.sequence_num += 1  
+                            self.packet_count += 1
+                            self.packets.append(msg["seq"])
+                        
+                        if self.cwnd < self.packet_count: 
+                            self.waiting = True   
+            
+            
+            # retransmit if the time is greater than RTO 
+            for packet in self.pending_acks:
+                if time.time() - packet["time"] > self.timeout:
+                    self.ssthresh = self.cwnd / 2
+                    self.cwnd = 1
+                    self.log("RETRANSMIT:Sending message '%s'" % packet)
+                    packet["time"] = time.time()
+                    self.send(packet)
+                    
+                                        
+        return
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='send data')
+    parser.add_argument('host', type=str, help="Remote host to connect to")
+    parser.add_argument('port', type=int, help="UDP port number to connect to")
+    args = parser.parse_args()
+    sender = Sender(args.host, args.port)
+    sender.run()
+
