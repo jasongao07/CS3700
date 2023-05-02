@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+import socket
+from urllib.parse import urlparse
+import sys
+import os 
+
+class ftpClient: 
+    def __init__(self):
+        # default params
+        self.username = "gaoja"
+        self.password = "sb7xvV6cq2ZGP5MXBItl"
+        self.port = "21"
+        self.hostname = "ftp.3700.network"
+        self.path = "/"
+        self.otherpath = ""
+        self.operation = sys.argv[1]
+        
+        # copying data from the ftp server to local machine
+        if self.operation == "cp" and sys.argv[2][:3] == 'ftp':
+            self.setArgs(urlparse(sys.argv[2]))
+            self.setupDefaults() 
+            self.otherpath = sys.argv[3]  
+            self.pasvCommand()
+            self.getDataSocketInfo(self.response)
+            self.connectDataSocket()
+            self.retrCommand()
+            self.socket2.close()
+            
+        # copying data from lcoal machine to the ftp server
+        elif self.operation == "cp" and sys.argv[3][:3] == 'ftp':
+            self.setArgs(urlparse(sys.argv[3]))
+            self.setupDefaults()
+            self.otherpath = sys.argv[2]
+            self.pasvCommand()
+            self.getDataSocketInfo(self.response)
+            self.connectDataSocket()
+            self.storCommand()
+            self.socket2.close()
+            
+        # move file from ftp server to local machine
+        # copies then deletes from the ftp server
+        elif self.operation == "mv" and sys.argv[2][:3] == 'ftp':
+            self.setArgs(urlparse(sys.argv[2]))
+            self.setupDefaults() 
+            self.otherpath = sys.argv[3] 
+            self.pasvCommand()
+            self.getDataSocketInfo(self.response)
+            self.connectDataSocket()
+            self.retrCommand()
+            self.deleCommand()
+            self.socket2.close()
+            
+        # move file from local machine to ftp server 
+        # copies then deletes from the local machine  
+        elif self.operation == "mv" and sys.argv[3][:3] == 'ftp':
+            self.setArgs(urlparse(sys.argv[3]))
+            self.setupDefaults()
+            self.otherpath = sys.argv[2]
+            self.pasvCommand()
+            self.getDataSocketInfo(self.response)
+            self.connectDataSocket()
+            self.storCommand()
+            os.remove(self.otherpath)
+            self.socket2.close() 
+        else:
+            self.setArgs(urlparse(sys.argv[2]))
+            self.setupDefaults()
+            
+            # opening a list of directories and files
+            if self.operation == "ls":
+                self.pasvCommand()
+                self.getDataSocketInfo(self.response)
+                self.connectDataSocket()
+                self.listCommand()
+                self.socket2.close()
+            # making a directory in the ftp server
+            elif self.operation == "mkdir":
+                self.mkdCommand()
+            # removing a file in the ftp server
+            elif self.operation == "rm":
+                self.deleCommand()
+            # removes a directory in the ftp server
+            elif self.operation == "rmdir":
+                self.rmdCommand()
+                  
+        self.quitCommand()    
+        self.socket.close()
+        
+    # sets the arguments given the url
+    def setArgs(self, url):
+        self.parseUrl = url
+        self.username = self.parseUrl.username
+        self.password = self.parseUrl.password
+        self.port = self.parseUrl.port
+        self.hostname = self.parseUrl.hostname
+        self.path = self.parseUrl.path
+    
+    # sets the default setups that is used for every command
+    def setupDefaults(self):
+        # connecting to the control socket
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect(("ftp.3700.network", 21))
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("socket response", self.response)
+
+        # sends the username to ftp server
+        self.socket.sendall((f"USER {self.username}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response username:", self.response)
+            
+        # sends the password to ftp server
+        self.socket.sendall((f"PASS {self.password}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response password:", self.response)   
+
+        # sends the type to ftp server
+        self.socket.sendall((f"TYPE I\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response type:", self.response)   
+        
+        # sends the mode to ftp server
+        self.socket.sendall((f"MODE S\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response mode:", self.response)  
+
+        # sends the structure to ftp server
+        self.socket.sendall((f"STRU F\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response STRU:", self.response)  
+
+    # sends the list commmand to ftp server
+    def listCommand(self):
+        self.socket.sendall((f"LIST {self.path}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket2.recv(1024).decode()
+            print(self.response) 
+            
+    # sends the delete commmand to ftp server        
+    def deleCommand(self):
+        self.socket.sendall((f"DELE {self.path}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response quit:", self.response)
+    
+    # sends the make directory commmand to ftp server    
+    def mkdCommand(self):
+        self.socket.sendall((f"MKD {self.path}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response MKD:", self.response) 
+    
+    # sends the remove directory commmand to ftp server    
+    def rmdCommand(self):
+        self.socket.sendall((f"RMD {self.path}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response RMD:", self.response) 
+        
+    # sends the upload commmand to ftp server
+    def storCommand(self):
+        self.socket.sendall((f"STOR {self.path}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response STOR:", self.response) 
+        with open(self.otherpath, 'rb') as f:
+            while True:
+                data = f.read(1024)
+                if not data:
+                    break
+                self.socket2.sendall(data)
+        
+    # sends the download commmand to ftp server
+    def retrCommand(self):
+        self.socket.sendall((f"RETR {self.path}\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response STOR:", self.response) 
+        # Open a new file for writing and receive the contents from the FTP server
+        with open(self.otherpath, 'wb') as f:
+            while True:
+                data = self.socket2.recv(1024)
+                if not data:
+                    break
+                f.write(data)
+                
+    # sends the passive commmand to ftp server
+    def pasvCommand(self):
+        self.socket.sendall((f"PASV\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response pasv:", self.response)   
+    
+    # sends the quit commmand to ftp server   
+    def quitCommand(self):
+        self.socket.sendall((f"QUIT\r\n").encode())
+        self.response = ""
+        while self.response[-2:] != '\r\n':
+            self.response += self.socket.recv(1024).decode()
+            print("Server response quit:", self.response)
+        
+    # sets the datahost and dataport variables
+    # using the response from PASV
+    def getDataSocketInfo(self, response):
+        start = response.find("(") + 1
+        end = response.find(")")
+        data = response[start:end].split(",")
+        self.datahost = ".".join(data[:4])
+        self.dataport = int(data[4]) * 256 + int(data[5])
+
+    # connects to the data socket 
+    def connectDataSocket(self):
+        if self.datahost != "" and self.dataport != "":
+            self.socket2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket2.connect((self.datahost, self.dataport))
+                
+if __name__ == "__main__":  
+    ftpClient()
