@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+
+import argparse
+import socket
+import ssl
+import urllib.parse
+from html.parser import HTMLParser
+
+DEFAULT_SERVER = "proj5.3700.network"
+DEFAULT_PORT = 443
+
+# Define a custom HTML parser to extract the CSRF token
+class CsrfTokenParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.csrf_token = None
+        self.potentialLinks = []
+        self.secretFlags = []
+
+    #looks for the input and a tags
+    def handle_starttag(self, tag, attrs):
+        #seaches for the input tag that is associated with the csrfmiddlewaretoken    
+        if tag == 'input':
+            # gets the first tag with "value: csrf_token"
+            for name, value in attrs:
+                if value == 'csrfmiddlewaretoken':
+                    for name, value in attrs:
+                        if name == 'value':
+                            self.csrf_token = value
+                            break
+
+        #searches for possible links that the crawler can visit and appends them to potentialLinks
+        elif tag == 'a':
+            for name,value in attrs:
+                if name =='href':
+                    self.potentialLinks.append(value)
+
+    #searches for secret flags in the data and adds it to the array secretFlags  
+    def handle_data(self, data):
+        if "FLAG: " in data:
+            self.secretFlags.append(data.split(":")[1].strip())
+    
+class Crawler:
+    # initializes the variables
+    def __init__(self, args):
+        self.server = args.server
+        self.port = args.port
+        self.username = args.username
+        self.password = args.password
+        self.cookies = []
+    
+    # returns the sessionid and csrftoken given the data
+    def get_cookie(self, data):
+        cookies = []
+        # finds the first cookie
+        firstIndex = data.index("Set-Cookie: ") + 12
+        data = data[firstIndex:]
+        firstEnd = data.index(";")
+        cookie = data[:firstEnd]
+        data = data[firstEnd:]
+        cookies.append(cookie)
+        
+        # finds the second cookie
+        firstIndex = data.index("Set-Cookie: ") + 12
+        data = data[firstIndex:]
+        firstEnd = data.index(";")
+        cookie = data[:firstEnd]
+        cookies.append(cookie)
+        return cookies
+                
+    # given the data, return the status code as an int
+    def get_status_code(self, data):
+        firstIndex = data.index("HTTP") + 9
+        code = data[firstIndex:firstIndex + 3]
+        return int(code)
+    
+    # given the data, returns only the body of the html
+    def get_html_body(self, data):
+        firstIndex = data.index("<body>")
+        secondIndex = data.index("</body>") + 7
+        return data[firstIndex:secondIndex]
+     
+    def run(self):
+
+        #initial request to the server to get the csrfmiddlewaretoken and cookies
+        request = "GET /accounts/login/?next=/fakebook/ HTTP/1.1\r\n" \
+                  f"Host: {DEFAULT_SERVER}:{DEFAULT_PORT}\r\n" \
+                  f"Connection: Keep-Alive\r\nKeep-Alive:timeout=10,max=1000\r\n\r\n"
+       
+        #creating a socket to connect with
+        mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        mysocket.connect((self.server, self.port))
+
+        #using TLS on the socket
+        context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+        mysocket = context.wrap_socket(mysocket, server_hostname=self.server)
+
+        #sends the initial request
+        mysocket.send(request.encode('ascii'))
+        response = ""
+        
+        #receives the response until theres nothing left to receive
+        response = mysocket.recv(1024).decode('ascii')
+        while "</html>" not in response:
+            temp = mysocket.recv(1024)
+            response += temp.decode('ascii')
+
+        #goes through the response received and get the cookies
+        self.cookies = self.get_cookie(response)
+
+        #isolates the HTML data and parses it
+        htmldata = response[response.index("<head>"):]
+        parser = CsrfTokenParser()
+        parser.feed(htmldata)
+
+        #gets the csrfmiddlewaretoken from the html data
+        csrf_token = parser.csrf_token
+
+        #encoded data is URI encoded data to be sent in the next POST request
+        form_data = {'username': self.username, 'password': self.password, "csrfmiddlewaretoken": csrf_token}
+        encoded_data = urllib.parse.urlencode(form_data)
+        script_path = '/accounts/login/?next=/fakebook/'
+
+        #POST request sent to the server to log into it with the provided credentials
+        request = f'POST {script_path} HTTP/1.1\r\n' \
+          f'Host: {DEFAULT_SERVER}:{DEFAULT_PORT}\r\n' \
+          f'Content-Type: application/x-www-form-urlencoded\r\n' \
+          f'Content-Length: {len(encoded_data)}\r\n' \
+          f'Referer: https://{DEFAULT_SERVER}/fakebook/\r\n' \
+          f'Cookie: {self.cookies[0]}; {self.cookies[1]}\r\n\r\n' \
+          f'{encoded_data}\r\n\r\n'
+
+        #sends the POST request to the server
+        mysocket.send(request.encode('ascii'))
+        response = ""
+        
+        #receives the header respsonse
+        response = mysocket.recv(1024).decode('ascii')
+        
+        #gets the new cookies from the post response    
+        self.cookies = self.get_cookie(response)
+        
+        #generates a GET request based on the given link and stored cookies
+        def generate_get_request(link):
+            link = urllib.parse.urlparse(link)
+            request = f"GET {link.path} HTTP/1.1\r\n" \
+                      f"Host:{link.netloc}\r\n" \
+                      f"Cookie: {self.cookies[0]}; {self.cookies[1]}\r\n" \
+                      f"Connection: Keep-Alive\r\nKeep-Alive:timeout=10,max=1000\r\n\r\n"
+            return request.encode('ascii')
+
+        #sends a request with a socket that is passed in
+        def send(request, mysocket):
+            mysocket.send(request)
+            #gets the data and cuts off at the last html tag
+            response = mysocket.recv(1024).decode('ascii')
+            while "</html>" not in response:
+                temp = mysocket.recv(1024)
+                response += temp.decode('ascii')
+            return response
+
+        #keeps track of the secret flags collected
+        flags = []
+
+        #links that need to be visited by the crawler
+        unvisitedLinks = ['https://proj5.3700.network/fakebook/']
+
+        #links that have already been visited by the crawler
+        visitedLinks = []
+
+        #crawler continues to run until all 5 flags are found
+        while len(flags) < 5:
+            #temp is the next link to be visited by the crawler
+            temp = unvisitedLinks.pop()
+
+            #adds the link to links visited    
+            visitedLinks.append(temp)
+
+            #generates a request to the link
+            request = generate_get_request(temp)
+
+            #sends the request to the server
+            received = send(request, mysocket) 
+
+            #extracts the status of the response
+            status = self.get_status_code(received)
+
+            #if the status is 200, parse the data and search for secret flags
+            if status == 200:
+    
+                #gets the HTML body of the response and parses the data
+                body = self.get_html_body(received)
+                bodyParser = CsrfTokenParser()
+                bodyParser.feed(body)
+
+                #if a secret flag is found, print it out and add it to the flags array
+                if bodyParser.secretFlags:
+                    print(bodyParser.secretFlags[0])
+                    flags.append(bodyParser.secretFlags)
+
+                #if there are any valid links on the page that are not yet visited, add it to unVisitedLinks
+                for path in bodyParser.potentialLinks:
+                    if '/fakebook/' in path:
+                        link = "https://proj5.3700.network" + path
+                        if link not in visitedLinks and link not in unvisitedLinks:
+                            unvisitedLinks.append(link)
+
+            #if the status is 403 or 404, skip it       
+            if status == 403 or status == 404:
+                continue 
+                
+            #if the status is 503, try the link again later 
+            if status == 503:
+                unvisitedLinks.append(temp)
+                visitedLinks.remove(temp)
+        
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='crawl Fakebook')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
+    parser.add_argument('username', type=str, help="The username to use")
+    parser.add_argument('password', type=str, help="The password to use")
+    args = parser.parse_args()
+    sender = Crawler(args)
+    sender.run()
